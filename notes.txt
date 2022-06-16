@@ -1,0 +1,96 @@
+mkdir crickets
+cd crickets
+mkdir main_flowcell_run
+cd main_flowcell_run
+mkdir raw_data
+mkdir raw_data/ignore
+mkdir raw_data/fastqc
+mkdir raw_data/fastqc/R1
+mkdir raw_data/fastqc/R2
+mkdir raw_data/trimmed
+mkdir raw_data/multiqc_reports
+mkdir raw_data/merged
+mkdir MEGASAT_output
+
+# copy data across
+cp /shared/molecol2/NBAF/MiSeq/Paul_WC_1/Paul_WC_1_C.zip raw_data/
+
+## verify transfer
+md5sum /shared/molecol2/NBAF/MiSeq/Paul_WC_1/Paul_WC_1_C.zip
+# 164fdf3050ed5591fddf2dffe2f37670
+md5sum raw_data/Paul_WC_1_C.zip
+# 164fdf3050ed5591fddf2dffe2f37670
+
+## move files into ignore dir
+mv raw_data/Undetermined_S0_L001_R* raw_data/BLANK_S8* raw_data/ignore/
+
+# decompress all
+gunzip raw_data/*.gz
+
+# count raw reads
+cat *R1* | grep -c "^@MN0" # 27,684,247
+
+# run FastQC and multiQC
+# R1 files
+for file in raw_data/*R1*.fastq ; do fastqc $file -o raw_data/fastqc/R1/ ; done
+multiqc raw_data/fastqc/R1 -o raw_data/multiqc_reports
+
+# R2 files
+for file in raw_data/*R2*.fastq ; do fastqc $file -o raw_data/fastqc/R2/ ; done
+multiqc raw_data/fastqc/R2 -o raw_data/multiqc_reports
+
+# Run TRIMMOMATIC
+# Main parameters used: LEADING:3 TRAILING:3 SLIDINGWINDOW:4:20 MINLEN:30
+for f in $(ls raw_data/*R1_001.fastq | sed 's/1_001.fastq//' | sort -u); do trimmomatic PE -phred33 ${f}1_001.fastq ${f}2_001.fastq ${f}1_paired.fastq ${f}1_unpaired.fastq ${f}2_paired.fastq ${f}2_unpaired.fastq LEADING:3 TRAILING:3 SLIDINGWINDOW:4:20 MINLEN:30 ; done
+
+# remove unpaired
+rm raw_data/*unpaired*
+
+# move trimmed into trim dir
+mv raw_data/*paired* raw_data/trimmed/
+
+# count reads surviving trimmomatic
+cat raw_data/trimmed/*R1* | grep -c "^@M" # 26121930 /  27684247 = 94.4%
+
+# files transferred to Graeme's machine and paired end asembly done with pandaseq
+for f in $(ls raw_data/trimmed/*R1_paired.fastq | sed 's/1_paired.fastq//' | sort -u); do OUT=$(basename ${f}) ; pandaseq -f ${f}1_paired.fastq -r ${f}2_paired.fastq -w raw_data/assembled/$OUT -O 300 ; done
+
+# files sent back to sharc
+# count total reads surviving assembly
+grep -c ">" raw_data/assembled/* |  awk 'BEGIN {cnt=0;FS=":"}; {cnt+=$2;}; END {print cnt;}'  # 13321144 reads
+
+# calculate average coverage
+# 94 samples, 42 markers = 3948 genotypes
+# 13321144/3948 = 3374 reads
+
+## need to cutadapt everything to get rid of leading sequences (megasat doesn't like them)
+# amke the F and R files based on the primer seqs and run cutadapt
+for file in assembled/*.fasta ; do OUT=$(basename $file .fasta) ; EXT=$(echo "_trimmed.fasta") ; cutadapt -g "file:F_primers.txt" -a "file:R_primers.txt" --action=retain -o assembled/cutadapt/$OUT$EXT $file -j 0 --discard-untrimmed; done
+
+# download megasat
+git clone https://github.com/beiko-lab/MEGASAT.git
+chmod +x MEGASAT/MEGASAT_1.0\ for\ Linux/MEGASAT_Genotype.pl
+mkdir MEGASAT_output
+
+# run megasat
+
+perl MEGASAT/MEGASAT_1.0\ for\ Linux/MEGASAT_Genotype.pl main_cell_primer_sheet.txt 50 5 12 raw_data/assembled/ MEGASAT_output/ && echo "MEGASAT RESULTS" | mail -s "MEGASAT results" -a MEGASAT_output/Output_/Genotype.txt a_user@sheffield.ac.uk
+
+
+### primer details
+# the filtered primer sheet used on the nano cell isn't bad. missing the following.
+# Added these in now but haven't been through the tidying up process that the others have.
+Gbim52
+Gbim72
+L8550
+L9077
+scaffold238689_130
+scaffold547998_337
+Gbim15
+L30428
+scaffold224342_122
+
+
+
+
+
